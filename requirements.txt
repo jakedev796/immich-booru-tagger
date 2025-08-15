@@ -1,0 +1,44 @@
+# Core dependencies
+requests>=2.31.0
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# AI/ML dependencies for tagging
+torch>=2.1.0
+torchvision>=0.16.0
+Pillow>=10.1.0
+numpy<2.0.0
+protobuf<5.0.0,>=3.20.3
+
+# WD-14 Tagger
+wdtagger>=0.4.0
+onnxruntime>=1.15.0
+timm>=0.9.0
+
+# DeepDanbooru (alternative)
+deepdanbooru>=1.0.0
+tensorflow>=2.10.0
+
+# Image processing
+opencv-python>=4.8.0
+
+# Logging and monitoring
+structlog>=23.2.0
+rich>=13.7.0
+
+# HTTP client with retry logic
+httpx>=0.25.0
+
+# Health server
+aiohttp>=3.9.0
+
+# System monitoring
+psutil>=5.9.0
+
+# Scheduling
+croniter>=2.0.0
+pytz>=2023.3
+
+# Optional: For better performance with large datasets
+tqdm>=4.66.0

@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  immich-tagger:
+    build: .
+    container_name: immich-auto-tagger
+    environment:
+      - IMMICH_BASE_URL=${IMMICH_BASE_URL}
+      - IMMICH_API_KEY=${IMMICH_API_KEY}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.35}
+      - BATCH_SIZE=${BATCH_SIZE:-25}
+      - PROCESSED_TAG_NAME=${PROCESSED_TAG_NAME:-auto:processed}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_SCHEDULER=${ENABLE_SCHEDULER:-true}
+      - CRON_SCHEDULE=${CRON_SCHEDULE:-0 2 * * *}
+      - TIMEZONE=${TIMEZONE:-UTC}
+    volumes:
+      - ./models:/app/models  # For caching AI models
+      - ./logs:/app/logs      # For persistent logs
+    ports:
+      - "8000:8000"  # Health endpoint
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
