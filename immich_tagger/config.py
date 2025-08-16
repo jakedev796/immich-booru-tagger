@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     max_retries: int = Field(default=3, env="MAX_RETRIES", gt=0)
     retry_delay: float = Field(default=1.0, env="RETRY_DELAY", gt=0.0)
     request_timeout: float = Field(default=30.0, env="REQUEST_TIMEOUT", gt=0.0)
+    tag_cache_ttl: int = Field(default=300, env="TAG_CACHE_TTL", gt=0)  # Tag cache TTL in seconds
     
     # Logging Configuration
     log_level: str = Field(default="INFO", env="LOG_LEVEL")

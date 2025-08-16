@@ -90,6 +90,7 @@ I highly recommend you run the continuous mode on a computer that is powered by 
 | `ENABLE_SCHEDULER` | Enable scheduled processing | `true` |
 | `CRON_SCHEDULE` | Cron expression for scheduling | `0 2 * * *` |
 | `TIMEZONE` | Timezone for scheduling | `UTC` |
+| `TAG_CACHE_TTL` | Tag cache TTL (seconds) | `300` |
 
 ### API Key Scopes
 

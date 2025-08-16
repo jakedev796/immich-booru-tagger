@@ -9,6 +9,7 @@ from .tagging_engine import create_tagging_engine, TaggingEngineError
 from .models import Asset, Tag, TagPrediction, AssetProcessingResult, BatchProcessingResult
 from .config import settings
 from .logging import get_logger, MetricsLogger
+from .performance_monitor import performance_monitor
 
 
 class ProcessorError(Exception):
@@ -64,19 +65,15 @@ class ImmichAutoTagger:
                 result.success = True
                 result.tags_assigned = []
             else:
-                # Get or create tags in Immich
+                # Use bulk tag operations for efficiency
+                tag_names = [prediction.name for prediction in predictions]
+                tag_mapping = self.immich_client.get_or_create_tags_bulk(tag_names)
+                
+                # Extract tag IDs for successful tags
                 tag_ids = []
-                for prediction in predictions:
-                    try:
-                        tag = self.immich_client.get_or_create_tag(prediction.name)
-                        tag_ids.append(tag.id)
-                        result.tags_assigned.append(prediction.name)
-                    except Exception as e:
-                        self.logger.warning(
-                            "Failed to get/create tag",
-                            tag_name=prediction.name,
-                            error=str(e)
-                        )
+                for tag_name, tag in tag_mapping.items():
+                    tag_ids.append(tag.id)
+                    result.tags_assigned.append(tag_name)
                 
                 # Apply tags to asset
                 if tag_ids:
@@ -97,6 +94,9 @@ class ImmichAutoTagger:
                 tags_count=len(result.tags_assigned),
                 processing_time=processing_time
             )
+            
+            # Record performance metrics
+            performance_monitor.record_asset_processed(processing_time)
             
             self.logger.info(
                 "Asset processed successfully",
@@ -124,11 +124,18 @@ class ImmichAutoTagger:
         return result
     
     def process_batch(self, assets: List[Asset]) -> BatchProcessingResult:
-        """Process a batch of assets."""
+        """Process a batch of assets with optimized bulk operations."""
         start_time = time.time()
         results = []
         
         self.logger.info("Starting batch processing", batch_size=len(assets))
+        
+        # Pre-warm the tag cache before processing
+        try:
+            self.immich_client.get_all_tags(use_cache=True)
+            self.logger.debug("Tag cache pre-warmed for batch processing")
+        except Exception as e:
+            self.logger.warning("Failed to pre-warm tag cache", error=str(e))
         
         for asset in assets:
             result = self.process_asset(asset)
@@ -152,6 +159,7 @@ class ImmichAutoTagger:
         
         # Log batch completion
         self.metrics.log_batch_complete(batch_size=len(assets), batch_time=batch_time)
+        performance_monitor.record_batch_processed(batch_time)
         
         self.logger.info(
             "Batch processing complete",
@@ -159,7 +167,8 @@ class ImmichAutoTagger:
             successful=successful,
             failed=failed,
             total_tags_assigned=total_tags_assigned,
-            batch_time=batch_time
+            batch_time=batch_time,
+            avg_time_per_asset=batch_time / len(assets) if assets else 0
         )
         
         return batch_result
@@ -236,10 +245,22 @@ class ImmichAutoTagger:
             time.sleep(1.0)
         
         self.logger.info("Continuous processing completed", total_cycles=cycle_count)
+        
+        # Log final performance summary
+        performance_monitor.log_performance_summary()
     
     def get_metrics(self):
         """Get current processing metrics."""
-        return self.metrics.get_metrics()
+        base_metrics = self.metrics.get_metrics()
+        performance_metrics = performance_monitor.get_metrics_dict()
+        
+        # Combine both metric sources
+        combined_metrics = {
+            "basic_metrics": base_metrics,
+            "performance_metrics": performance_metrics
+        }
+        
+        return combined_metrics
     
     def test_connection(self) -> bool:
         """Test the connection to Immich."""

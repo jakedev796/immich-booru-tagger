@@ -8,6 +8,7 @@ import httpx
 from .models import Asset, Tag, SearchFilters, BulkTagRequest, CreateTagRequest
 from .config import settings
 from .logging import get_logger
+from .performance_monitor import performance_monitor
 
 
 class ImmichAPIError(Exception):
@@ -25,6 +26,12 @@ class ImmichClient:
         self.max_retries = settings.max_retries
         self.retry_delay = settings.retry_delay
         self.logger = get_logger("immich_client")
+        
+        # Performance optimizations
+        self._tag_cache: Dict[str, Tag] = {}  # name -> Tag mapping
+        self._tag_cache_valid = False
+        self._tag_cache_timestamp = 0
+        self._cache_ttl = settings.tag_cache_ttl
         
         # HTTP client with retry logic
         self.client = httpx.Client(
@@ -44,6 +51,7 @@ class ImmichClient:
     ) -> Any:
         """Make an HTTP request with retry logic."""
         url = f"{self.base_url}{endpoint}"
+        request_start = time.time()
         
         for attempt in range(self.max_retries + 1):
             try:
@@ -54,6 +62,11 @@ class ImmichClient:
                     json=json_data
                 )
                 response.raise_for_status()
+                
+                # Record successful API call
+                response_time = time.time() - request_start
+                performance_monitor.record_api_call(response_time)
+                
                 return response
                 
             except httpx.HTTPStatusError as e:
@@ -164,13 +177,28 @@ class ImmichClient:
                     self.logger.error("Request failed", error=str(e))
                     raise ImmichAPIError(f"Request failed: {e}")
     
-    def get_all_tags(self) -> List[Tag]:
-        """Get all tags from Immich."""
-        self.logger.debug("Fetching all tags")
+    def get_all_tags(self, use_cache: bool = True) -> List[Tag]:
+        """Get all tags from Immich with optional caching."""
+        current_time = time.time()
+        
+        # Check if cache is valid
+        if (use_cache and self._tag_cache_valid and 
+            current_time - self._tag_cache_timestamp < self._cache_ttl):
+            self.logger.debug("Using cached tags", count=len(self._tag_cache))
+            return list(self._tag_cache.values())
+        
+        self.logger.debug("Fetching all tags from API")
         
         response = self._make_request(method="GET", endpoint="/api/tags")
         tags_data = response.json()
         tags = [Tag(**tag_data) for tag_data in tags_data]
+        
+        # Update cache
+        if use_cache:
+            self._tag_cache = {tag.name.lower(): tag for tag in tags}
+            self._tag_cache_valid = True
+            self._tag_cache_timestamp = current_time
+            self.logger.debug("Updated tag cache", count=len(self._tag_cache))
         
         self.logger.info("Fetched tags", count=len(tags))
         return tags
@@ -188,20 +216,79 @@ class ImmichClient:
         tag_data = response.json()
         tag = Tag(**tag_data)
         
+        # Update cache immediately
+        self._tag_cache[tag.name.lower()] = tag
+        
         self.logger.info("Created tag", tag_id=tag.id, name=tag.name)
         return tag
     
     def get_or_create_tag(self, tag_name: str) -> Tag:
         """Get an existing tag or create it if it doesn't exist."""
-        # First, try to find existing tag
-        all_tags = self.get_all_tags()
-        for tag in all_tags:
-            if tag.name.lower() == tag_name.lower():
-                return tag
+        tag_name_lower = tag_name.lower()
+        
+        # Ensure cache is populated
+        if not self._tag_cache_valid:
+            self.get_all_tags(use_cache=True)
+        
+        # Check cache first
+        if tag_name_lower in self._tag_cache:
+            performance_monitor.record_cache_hit()
+            performance_monitor.record_tag_from_cache()
+            return self._tag_cache[tag_name_lower]
         
         # Create new tag if not found
+        performance_monitor.record_cache_miss()
+        self.logger.debug("Creating new tag", name=tag_name)
         tag_request = CreateTagRequest(name=tag_name)
-        return self.create_tag(tag_request)
+        new_tag = self.create_tag(tag_request)
+        performance_monitor.record_tag_created()
+        
+        # Add to cache
+        self._tag_cache[tag_name_lower] = new_tag
+        
+        return new_tag
+    
+    def get_or_create_tags_bulk(self, tag_names: List[str]) -> Dict[str, Tag]:
+        """Get or create multiple tags efficiently. Returns a mapping of original tag names to Tag objects."""
+        if not tag_names:
+            return {}
+        
+        # Ensure cache is populated
+        if not self._tag_cache_valid:
+            self.get_all_tags(use_cache=True)
+        
+        result = {}
+        missing_tags = []
+        
+        # Check which tags exist in cache
+        for tag_name in tag_names:
+            tag_name_lower = tag_name.lower()
+            if tag_name_lower in self._tag_cache:
+                result[tag_name] = self._tag_cache[tag_name_lower]
+                performance_monitor.record_cache_hit()
+                performance_monitor.record_tag_from_cache()
+            else:
+                missing_tags.append(tag_name)
+                performance_monitor.record_cache_miss()
+        
+        # Create missing tags
+        if missing_tags:
+            performance_monitor.record_bulk_operation()
+            self.logger.debug("Creating missing tags", count=len(missing_tags), tags=missing_tags)
+            for tag_name in missing_tags:
+                try:
+                    new_tag = self.create_tag(CreateTagRequest(name=tag_name))
+                    result[tag_name] = new_tag
+                    performance_monitor.record_tag_created()
+                except Exception as e:
+                    self.logger.warning("Failed to create tag", tag_name=tag_name, error=str(e))
+                    # Continue with other tags
+                    continue
+        
+        self.logger.debug("Bulk tag lookup/creation completed", 
+                         requested=len(tag_names), 
+                         found=len(result))
+        return result
     
     def bulk_tag_assets(self, asset_ids: List[str], tag_ids: List[str]) -> None:
         """Bulk tag assets with multiple tags."""
@@ -300,6 +387,12 @@ class ImmichClient:
         except Exception as e:
             self.logger.error("Connection test failed", error=str(e))
             return False
+    
+    def invalidate_tag_cache(self):
+        """Invalidate the tag cache to force refresh on next access."""
+        self._tag_cache_valid = False
+        self._tag_cache.clear()
+        self.logger.debug("Tag cache invalidated")
     
     def close(self):
         """Close the HTTP client."""
