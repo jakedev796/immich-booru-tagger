@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     
     # Processing Configuration
     confidence_threshold: float = Field(default=0.35, env="CONFIDENCE_THRESHOLD", ge=0.0, le=1.0)
-    batch_size: int = Field(default=25, env="BATCH_SIZE", gt=0, le=100)
+    batch_size: int = Field(default=25, env="BATCH_SIZE", gt=0, le=500)
     processed_tag_name: str = Field(default="auto:processed", env="PROCESSED_TAG_NAME")
     
     # Model Configuration

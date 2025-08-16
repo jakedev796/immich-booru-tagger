@@ -180,7 +180,9 @@ class ImmichAutoTagger:
         
         try:
             # Get all assets (we'll filter out processed ones)
-            all_assets = self.immich_client.get_unprocessed_assets(limit=limit * 2)  # Get more to account for filtering
+            # Cap at 1000 due to Immich API limit
+            api_limit = min(limit * 2, 1000)
+            all_assets = self.immich_client.get_unprocessed_assets(limit=api_limit)
             
             if not all_assets:
                 self.logger.info("No assets found")

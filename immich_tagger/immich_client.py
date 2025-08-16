@@ -123,7 +123,9 @@ class ImmichClient:
         """Get assets that haven't been processed yet."""
         # For now, get all assets and filter in the processor
         # The Immich API doesn't support negative tag filtering with "!" syntax
-        filters = SearchFilters(size=limit)
+        # Cap at 1000 due to Immich API limit
+        api_limit = min(limit, 1000)
+        filters = SearchFilters(size=api_limit)
         
         return self.search_assets(filters)
     
