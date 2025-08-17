@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     confidence_threshold: float = Field(default=0.35, env="CONFIDENCE_THRESHOLD", ge=0.0, le=1.0)
     batch_size: int = Field(default=250, env="BATCH_SIZE", description="Natural batch size from metadata API (~250)")
     processed_tag_name: str = Field(default="auto:processed", env="PROCESSED_TAG_NAME")
+    failure_timeout: int = Field(default=3, env="FAILURE_TIMEOUT", ge=0, description="Max retries for failed assets (0 = never retry)")
     
     # Model Configuration
     tagging_model: str = Field(default="wd14", env="TAGGING_MODEL")

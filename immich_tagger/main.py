@@ -57,6 +57,25 @@ def parse_arguments():
         help="Show processing progress and exit"
     )
     
+    parser.add_argument(
+        "--show-failures",
+        action="store_true",
+        help="Show failed asset summary and IDs, then exit"
+    )
+    
+    parser.add_argument(
+        "--reset-failures",
+        action="store_true",
+        help="Reset all failure tracking and exit"
+    )
+    
+    parser.add_argument(
+        "--reset-failure",
+        type=str,
+        metavar="ASSET_ID",
+        help="Reset failure tracking for specific asset ID and exit"
+    )
+    
     return parser.parse_args()
 
 
@@ -180,6 +199,38 @@ def main():
             status = processor.get_progress_status()
             logger.info(f"📊 Total assets processed: {status['total_processed']}")
             logger.info(f"🏷️  Total tags assigned: {status['total_tags_assigned']}")
+            return 0
+        
+        if args.show_failures:
+            logger.info("❌ Failure Status")
+            summary = processor.get_failure_summary()
+            logger.info(f"📊 Total failed assets: {summary['total_failed_assets']}")
+            logger.info(f"❌ Permanently failed: {summary['permanently_failed']}")
+            logger.info(f"🔄 Retry candidates: {summary['retry_candidates']}")
+            logger.info(f"⚙️  Failure timeout: {summary['failure_timeout']} attempts")
+            
+            permanently_failed = processor.get_failed_asset_ids(permanently_failed_only=True)
+            if permanently_failed:
+                logger.info(f"🔗 Permanently failed asset IDs:")
+                for i, asset_id in enumerate(permanently_failed[:20]):  # Show first 20
+                    logger.info(f"   {i+1}. {asset_id}")
+                if len(permanently_failed) > 20:
+                    logger.info(f"   ... and {len(permanently_failed) - 20} more")
+            else:
+                logger.info("✅ No permanently failed assets")
+            return 0
+        
+        if args.reset_failures:
+            logger.info("🔄 Resetting all failure tracking")
+            processor.reset_failures()
+            logger.info("✅ All failure records reset")
+            return 0
+        
+        if args.reset_failure:
+            asset_id = args.reset_failure
+            logger.info(f"🔄 Resetting failure tracking for asset {asset_id}")
+            processor.reset_failures([asset_id])
+            logger.info(f"✅ Failure record reset for {asset_id}")
             return 0
         
 

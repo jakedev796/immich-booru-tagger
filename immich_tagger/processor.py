@@ -10,6 +10,7 @@ from .models import Asset, Tag, TagPrediction, AssetProcessingResult, BatchProce
 from .config import settings
 from .logging import get_logger, MetricsLogger
 from .performance_monitor import performance_monitor
+from .failure_tracker import FailureTracker
 
 
 class ProcessorError(Exception):
@@ -30,6 +31,9 @@ class ImmichAutoTagger:
         # Progress tracking
         self.total_processed_assets = 0
         self.total_assigned_tags = 0
+        
+        # Initialize failure tracking
+        self.failure_tracker = FailureTracker()
         
         # Initialize the processed tag
         self._initialize_processed_tag()
@@ -134,6 +138,14 @@ class ImmichAutoTagger:
         
         batch_time = time.time() - start_time
         
+        # Process failure tracking for failed assets
+        for i, result in enumerate(results):
+            if not result.success and result.error:
+                asset = assets[i]
+                should_retry = self.failure_tracker.record_failure(asset.id)
+                if not should_retry:
+                    self.logger.warning(f"❌ Asset {asset.originalFileName} ({asset.id}) marked as permanently failed")
+        
         # Calculate batch statistics
         successful = sum(1 for r in results if r.success)
         failed = sum(1 for r in results if not r.success and r.error)
@@ -197,8 +209,17 @@ class ImmichAutoTagger:
                 self.logger.info("✅ No more untagged images found - processing complete!")
                 return []
             
-            self.logger.info(f"🎯 Found {len(assets)} untagged images to process")
-            return assets
+            # Filter out permanently failed assets
+            filtered_assets = self.failure_tracker.filter_failed_assets(assets)
+            
+            if not filtered_assets:
+                if len(assets) > 0:
+                    self.logger.warning(f"⚠️  Found {len(assets)} untagged images, but all are permanently failed!")
+                    self.logger.info("💡 Use --show-failures to see failed asset IDs or --reset-failures to retry them")
+                return []
+            
+            self.logger.info(f"🎯 Found {len(filtered_assets)} untagged images to process")
+            return filtered_assets
             
         except Exception as e:
             self.logger.error(f"Failed to get unprocessed assets: {str(e)}")
@@ -270,6 +291,30 @@ class ImmichAutoTagger:
             "total_processed": self.total_processed_assets,
             "total_tags_assigned": self.total_assigned_tags
         }
+    
+    def get_failure_summary(self) -> dict:
+        """Get failure tracking summary."""
+        return self.failure_tracker.get_failure_summary()
+    
+    def get_failed_asset_ids(self, permanently_failed_only: bool = True) -> List[str]:
+        """Get list of failed asset IDs.
+        
+        Args:
+            permanently_failed_only: If True, only return permanently failed assets.
+                                   If False, return all failed assets (including retry candidates).
+        """
+        if permanently_failed_only:
+            return self.failure_tracker.get_permanently_failed_assets()
+        else:
+            return list(self.failure_tracker.get_failed_assets().keys())
+    
+    def reset_failures(self, asset_ids: List[str] = None):
+        """Reset failure tracking for specific assets or all assets.
+        
+        Args:
+            asset_ids: List of asset IDs to reset, or None to reset all failures
+        """
+        self.failure_tracker.reset_failures(asset_ids)
 
     def get_metrics(self):
         """Get current processing metrics."""

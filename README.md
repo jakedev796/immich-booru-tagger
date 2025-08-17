@@ -20,6 +20,48 @@ This design is **resumable** (restart anytime), **efficient** (no complex querie
 
 **Note**: Only image assets are processed since WD-14 and DeepDanbooru models cannot analyze videos. Videos are automatically excluded from the search to improve efficiency.
 
+## Failure Handling
+
+The system includes robust failure handling for assets that consistently fail to process:
+
+- **Retry Logic**: Failed assets are retried up to `FAILURE_TIMEOUT` times (default: 3)
+- **Permanent Failures**: Assets exceeding the retry limit are marked as permanently failed
+- **Smart Filtering**: Permanently failed assets are excluded from future processing cycles
+- **Persistent Storage**: Failure data persists across restarts in `processing_failures.json`
+- **Management Commands**: View and reset failure tracking via CLI commands
+- **Cleanup Script**: Remove permanently failed assets from Immich (typically corrupted files)
+
+**Configuration:**
+- Set `FAILURE_TIMEOUT=0` to never retry failed assets (immediate permanent failure)
+- Set `FAILURE_TIMEOUT=5` to allow up to 5 retry attempts per asset
+- Use `--show-failures` to see which assets are failing and why
+- Use `--reset-failures` to give failed assets another chance
+
+### Cleanup Script for Failed Assets
+
+For assets that consistently fail (often due to corruption, unsupported formats, or file system issues), you can use the cleanup script to remove them from Immich entirely:
+
+```bash
+# Preview what would be deleted (always run this first!)
+python cleanup_failed_assets.py --dry-run
+
+# Interactive cleanup with confirmations
+python cleanup_failed_assets.py
+
+# Remove specific failed assets only
+python cleanup_failed_assets.py --asset-ids asset-id-1 asset-id-2
+
+# Automated cleanup (use with extreme caution!)
+python cleanup_failed_assets.py --force
+```
+
+**⚠️ IMPORTANT SAFETY NOTES:**
+- **Always use `--dry-run` first** to preview what will be deleted
+- **This permanently deletes assets from Immich** - have backups if needed
+- Failed assets are typically corrupted, unreadable, or have format issues
+- The script only processes assets that are marked as "permanently failed"
+- Assets must exist in Immich to be deleted (handles missing assets gracefully)
+
 ## Recommended Usage
 
 I highly recommend you run the continuous mode on a computer that is powered by a GPU. Then, after the bulk of the images are tagged, you can run the scheduler mode to keep the tags up to date on almost any PC, since this will be a lot less intensive.
@@ -109,6 +151,7 @@ I highly recommend you run the continuous mode on a computer that is powered by 
 | `CRON_SCHEDULE` | Cron expression for scheduling | `0 2 * * *` |
 | `TIMEZONE` | Timezone for scheduling | `UTC` |
 | `TAG_CACHE_TTL` | Tag cache TTL (seconds) | `300` |
+| `FAILURE_TIMEOUT` | Max retries for failed assets (0 = never retry) | `3` |
 
 ### API Key Scopes
 
@@ -131,6 +174,9 @@ Options:
   --test-connection                       Test connection to Immich and exit
   --progress-status                       Show processing progress and exit
   --reset-progress                        Reset processing progress counters
+  --show-failures                         Show failed asset summary and IDs, then exit
+  --reset-failures                        Reset all failure tracking and exit
+  --reset-failure ASSET_ID                Reset failure tracking for specific asset ID
 ```
 
 ### Processing Modes
@@ -157,6 +203,21 @@ python -m immich_tagger.main --mode continuous --max-cycles 10
 
 # Reset progress counters (if needed)
 python -m immich_tagger.main --reset-progress
+
+# View failed assets
+python -m immich_tagger.main --show-failures
+
+# Reset all failure tracking
+python -m immich_tagger.main --reset-failures
+
+# Reset failure tracking for specific asset
+python -m immich_tagger.main --reset-failure "asset-id-here"
+
+# Clean up failed assets (preview first!)
+python cleanup_failed_assets.py --dry-run
+
+# Remove permanently failed assets from Immich  
+python cleanup_failed_assets.py
 
 # Override batch size
 python -m immich_tagger.main --batch-size 50
@@ -285,3 +346,45 @@ The service uses structured logging. Key log levels:
 - `INFO`: Processing progress and metrics
 - `DEBUG`: Detailed API calls and model operations
 - `ERROR`: Failures and exceptions
+
+## Managing Failed Assets
+
+### Common Causes of Processing Failures
+
+Assets may fail to process for several reasons:
+
+1. **Corrupted Files**: Images with file system corruption or incomplete downloads
+2. **Unsupported Formats**: Rare image formats that WD-14 models cannot process
+3. **Filesystem Issues**: Permission problems or disk errors
+4. **Memory Issues**: Extremely large images that exceed processing limits
+5. **Network Issues**: Temporary API failures (these usually retry successfully)
+
+### Workflow for Managing Failed Assets
+
+1. **Monitor Failures**: Use `--show-failures` to see which assets are failing
+2. **Investigate**: Check file sizes, formats, and filesystem status in Immich web UI
+3. **Decide Action**: 
+   - **Fix Issues**: Repair corrupted files, fix permissions, etc.
+   - **Reset and Retry**: Use `--reset-failures` after fixing underlying issues
+   - **Remove Problem Assets**: Use `cleanup_failed_assets.py` for permanently corrupted files
+
+### Example Cleanup Workflow
+
+```bash
+# 1. See what's failing
+python -m immich_tagger.main --show-failures
+
+# 2. Preview cleanup (safe to run)
+python cleanup_failed_assets.py --dry-run
+
+# 3. Investigate specific assets in Immich web UI
+# (Look for file corruption, unusual formats, zero-byte files, etc.)
+
+# 4a. If fixable: reset failures and retry processing
+python -m immich_tagger.main --reset-failures
+
+# 4b. If corrupted/unfixable: remove the problem assets
+python cleanup_failed_assets.py
+```
+
+**💡 Pro Tip**: Failed assets are often a small percentage of your library. Removing them can significantly improve processing efficiency for large libraries (100k+ images).
