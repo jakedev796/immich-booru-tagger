@@ -6,6 +6,20 @@ A standalone service that processes images/videos from an Immich instance, runs 
 
 I have a lot of images in my Immich instance, and I want to tag them with booru styled tags. I don't want to use the Immich UI for this, because it's too slow and clunky (mostly because I have 100k~ images). Because of that, Immich Booru-Tagger was created. If you also use Immich to store booru-style images (anime), this is for you.
 
+## How It Works
+
+Immich Booru-Tagger uses a simple and efficient approach:
+
+1. **Finds Untagged Images**: Uses Immich's metadata search to find image assets with no tags (excludes videos)
+2. **Processes in Batches**: Takes ~250 images per cycle and runs AI tagging
+3. **Marks as Processed**: Tags each image with `auto:processed` when complete
+4. **Self-Filtering**: Tagged images automatically disappear from future searches
+5. **Repeats Until Done**: Continues until no untagged images remain
+
+This design is **resumable** (restart anytime), **efficient** (no complex queries), and **self-managing** (no manual checkpoint management needed).
+
+**Note**: Only image assets are processed since WD-14 and DeepDanbooru models cannot analyze videos. Videos are automatically excluded from the search to improve efficiency.
+
 ## Recommended Usage
 
 I highly recommend you run the continuous mode on a computer that is powered by a GPU. Then, after the bulk of the images are tagged, you can run the scheduler mode to keep the tags up to date on almost any PC, since this will be a lot less intensive.
@@ -13,12 +27,13 @@ I highly recommend you run the continuous mode on a computer that is powered by 
 ## Features
 
 - **AI-Powered Tagging**: Uses anime image recognition models (WD-14 or DeepDanbooru)
-- **Incremental Processing**: Only processes assets that haven't been tagged yet
-- **Batch Processing**: Configurable batch sizes for efficient processing
+- **Smart Processing**: Automatically finds and processes untagged images (videos excluded)
+- **Self-Managing**: Tagged assets are automatically excluded from future processing
+- **Natural Batching**: Processes ~250 assets per cycle efficiently
+- **Resumable**: Always picks up where it left off, no complex checkpointing needed
 - **Health Monitoring**: Built-in health checks and metrics endpoint
 - **Docker Support**: Easy deployment with Docker and docker-compose
-- **Retry Logic**: Robust error handling with exponential backoff
-- **Structured Logging**: Comprehensive logging with structured output
+- **High Performance**: 10+ assets/sec processing speed with robust error handling
 
 ## Quick Start
 
@@ -46,6 +61,9 @@ I highly recommend you run the continuous mode on a computer that is powered by 
    # Edit .env file with your Immich settings
    IMMICH_BASE_URL=https://your-immich-server.com
    IMMICH_API_KEY=your-api-key-with-required-scopes
+   
+   # Optional: Adjust batch size (default 250 works well)
+   BATCH_SIZE=250
    ```
 
 4. **Run with docker-compose:**
@@ -111,6 +129,8 @@ Options:
   --max-cycles INT                        Maximum processing cycles (continuous mode)
   --batch-size INT                        Override batch size from configuration
   --test-connection                       Test connection to Immich and exit
+  --progress-status                       Show processing progress and exit
+  --reset-progress                        Reset processing progress counters
 ```
 
 ### Processing Modes
@@ -126,11 +146,17 @@ Options:
 # Test connection
 python -m immich_tagger.main --test-connection
 
+# Check processing progress
+python -m immich_tagger.main --progress-status
+
 # Process one batch
 python -m immich_tagger.main --mode single
 
 # Continuous processing with max cycles
 python -m immich_tagger.main --mode continuous --max-cycles 10
+
+# Reset progress counters (if needed)
+python -m immich_tagger.main --reset-progress
 
 # Override batch size
 python -m immich_tagger.main --batch-size 50

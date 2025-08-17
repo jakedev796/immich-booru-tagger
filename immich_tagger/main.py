@@ -45,6 +45,18 @@ def parse_arguments():
         help="Test connection to Immich and exit"
     )
     
+    parser.add_argument(
+        "--reset-progress",
+        action="store_true",
+        help="Reset processing progress counters"
+    )
+    
+    parser.add_argument(
+        "--progress-status",
+        action="store_true",
+        help="Show processing progress and exit"
+    )
+    
     return parser.parse_args()
 
 
@@ -60,32 +72,30 @@ async def run_health_server_async(processor: ImmichAutoTagger):
 def run_single_cycle(processor: ImmichAutoTagger) -> bool:
     """Run a single processing cycle."""
     logger = get_logger("main")
-    logger.info("Running single processing cycle")
+    logger.info("🔄 Running single processing cycle...")
     
     try:
         success = processor.run_processing_cycle()
         if success:
-            logger.info("Single cycle completed successfully")
+            logger.info("✅ Single cycle completed successfully")
         else:
-            logger.info("Single cycle completed - no more assets to process")
+            logger.info("✅ Single cycle completed - no more assets to process")
         return success
     except Exception as e:
-        logger.error("Single cycle failed", error=str(e))
+        logger.error(f"❌ Single cycle failed: {str(e)}")
         return False
 
 
 def run_continuous_processing(processor: ImmichAutoTagger, max_cycles: Optional[int] = None):
     """Run continuous processing."""
     logger = get_logger("main")
-    logger.info("Starting continuous processing", max_cycles=max_cycles)
     
     try:
         processor.run_continuous_processing(max_cycles=max_cycles)
-        logger.info("Continuous processing completed")
     except KeyboardInterrupt:
-        logger.info("Continuous processing interrupted by user")
+        logger.info("⏹️  Processing interrupted by user")
     except Exception as e:
-        logger.error("Continuous processing failed", error=str(e))
+        logger.error(f"❌ Continuous processing failed: {str(e)}")
         raise
 
 
@@ -101,7 +111,7 @@ async def run_with_health_server(processor: ImmichAutoTagger, mode: str, max_cyc
             # Run single cycle
             success = run_single_cycle(processor)
             if not success:
-                logger.info("No assets to process, exiting")
+                logger.info("✅ No assets to process, exiting")
                 return
         
         elif mode == "continuous":
@@ -110,17 +120,17 @@ async def run_with_health_server(processor: ImmichAutoTagger, mode: str, max_cyc
         
         elif mode == "scheduler":
             # Run with scheduler
-            logger.info("Running in scheduler mode")
+            logger.info("⏰ Running in scheduler mode")
             scheduler = Scheduler()
             await scheduler.start()
         
         elif mode == "health-only":
             # Only run health server
-            logger.info("Running in health-only mode")
+            logger.info("🏥 Running in health-only mode")
             await health_task
         
     except KeyboardInterrupt:
-        logger.info("Received interrupt signal, shutting down")
+        logger.info("⏹️  Received interrupt signal, shutting down")
     finally:
         # Cancel health server
         health_task.cancel()
@@ -142,23 +152,37 @@ def main():
     # Override batch size if specified
     if args.batch_size:
         settings.batch_size = args.batch_size
-        logger.info("Overriding batch size", batch_size=args.batch_size)
+        logger.info(f"📦 Using batch size: {args.batch_size}")
     
-    logger.info("Starting Immich Auto-Tagger", mode=args.mode)
+    logger.info(f"🚀 Starting Immich Auto-Tagger in {args.mode} mode")
     
     try:
         # Initialize processor
         processor = ImmichAutoTagger()
         
-        # Test connection if requested
+        # Handle special commands
         if args.test_connection:
-            logger.info("Testing connection to Immich")
+            logger.info("🔍 Testing connection to Immich")
             if processor.test_connection():
-                logger.info("Connection test successful")
+                logger.info("✅ Connection test successful")
                 return 0
             else:
-                logger.error("Connection test failed")
+                logger.error("❌ Connection test failed")
                 return 1
+        
+        if args.reset_progress:
+            logger.info("🔄 Resetting processing progress")
+            processor.reset_progress()
+            return 0
+            
+        if args.progress_status:
+            logger.info("📊 Processing Progress Status")
+            status = processor.get_progress_status()
+            logger.info(f"📊 Total assets processed: {status['total_processed']}")
+            logger.info(f"🏷️  Total tags assigned: {status['total_tags_assigned']}")
+            return 0
+        
+
         
         # Run the service
         if args.mode == "health-only":
@@ -168,17 +192,17 @@ def main():
             # Run with health server
             asyncio.run(run_with_health_server(processor, args.mode, args.max_cycles))
         
-        logger.info("Service completed successfully")
+        logger.info("✅ Service completed successfully")
         return 0
         
     except ProcessorError as e:
-        logger.error("Processor error", error=str(e))
+        logger.error(f"❌ Processor error: {str(e)}")
         return 1
     except KeyboardInterrupt:
-        logger.info("Service interrupted by user")
+        logger.info("⏹️  Service interrupted by user")
         return 0
     except Exception as e:
-        logger.error("Unexpected error", error=str(e))
+        logger.error(f"❌ Unexpected error: {str(e)}")
         return 1
     finally:
         # Clean up

@@ -5,7 +5,7 @@ Immich API client for interacting with the Immich instance.
 import time
 from typing import List, Optional, Dict, Any
 import httpx
-from .models import Asset, Tag, SearchFilters, BulkTagRequest, CreateTagRequest
+from .models import Asset, Tag, BulkTagRequest, CreateTagRequest
 from .config import settings
 from .logging import get_logger
 from .performance_monitor import performance_monitor
@@ -41,6 +41,10 @@ class ImmichClient:
                 "Content-Type": "application/json",
             }
         )
+        
+        # Silence httpx request logging
+        import logging
+        logging.getLogger("httpx").setLevel(logging.WARNING)
     
     def _make_request(
         self, 
@@ -72,20 +76,14 @@ class ImmichClient:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500 and attempt < self.max_retries:
                     self.logger.warning(
-                        "Server error, retrying",
-                        status_code=e.response.status_code,
-                        attempt=attempt + 1,
-                        max_retries=self.max_retries
+                        f"⚠️  Server error {e.response.status_code}, retrying "
+                        f"(attempt {attempt + 1}/{self.max_retries})"
                     )
                     time.sleep(self.retry_delay * (2 ** attempt))  # Exponential backoff
                     continue
                 else:
                     self.logger.error(
-                        "HTTP request failed",
-                        method=method,
-                        url=url,
-                        status_code=e.response.status_code,
-                        response_text=e.response.text
+                        f"❌ HTTP {method} {url} failed: {e.response.status_code} - {e.response.text}"
                     )
                     raise ImmichAPIError(f"HTTP {e.response.status_code}: {e.response.text}")
                     
@@ -100,34 +98,70 @@ class ImmichClient:
                     time.sleep(self.retry_delay * (2 ** attempt))
                     continue
                 else:
-                    self.logger.error("Request failed", error=str(e))
+                    self.logger.error(f"❌ Request failed: {str(e)}")
                     raise ImmichAPIError(f"Request failed: {e}")
     
-    def search_assets(self, filters: SearchFilters) -> List[Asset]:
-        """Search for assets using the Immich API."""
-        self.logger.debug("Searching assets", filters=filters.dict())
+    def get_untagged_assets(self) -> List[Asset]:
+        """Get image assets that have no tags using the metadata search endpoint.
         
+        This endpoint naturally returns up to 250 assets at a time that don't have any tags.
+        As we tag assets with 'auto:processed', they disappear from this search automatically.
+        Only searches for IMAGE assets since WD14 cannot process videos.
+        
+        Returns:
+            List of untagged image assets (max 250 per call)
+        """
+        self.logger.debug("🔍 Getting untagged image assets via metadata search")
+        
+        # Use the metadata search endpoint to find image assets without any tags
         response = self._make_request(
             method="POST",
-            endpoint="/api/search/random",
-            json_data=filters.dict(exclude_none=True)
+            endpoint="/api/search/metadata",
+            json_data={
+                "tagIds": None,  # null/None means "assets with no tags"
+                "type": "IMAGE"  # Only process images, not videos (WD14 can't process videos)
+            }
         )
         
-        assets_data = response.json()
-        assets = [Asset(**asset_data) for asset_data in assets_data]
+        response_data = response.json()
         
-        self.logger.info("Found assets", count=len(assets))
+        # Metadata search returns: {"albums": {...}, "assets": {"items": [...], "total": N, "nextPage": "..."}}
+        if not isinstance(response_data, dict) or "assets" not in response_data:
+            self.logger.error(f"❌ Unexpected metadata response structure: {list(response_data.keys()) if isinstance(response_data, dict) else type(response_data)}")
+            return []
+            
+        assets_section = response_data["assets"]
+        assets_list = assets_section.get("items", [])
+        total_available = assets_section.get("total", len(assets_list))
+        
+        self.logger.debug(f"📊 Metadata search: {len(assets_list)} assets returned, {total_available} total available")
+        
+        # Parse assets
+        assets = []
+        for asset_data in assets_list:
+            try:
+                if isinstance(asset_data, dict):
+                    assets.append(Asset(**asset_data))
+                else:
+                    self.logger.debug(f"⚠️  Skipping non-dict asset data: {type(asset_data)}")
+            except Exception as e:
+                self.logger.warning(f"⚠️  Failed to parse asset: {e}")
+                continue
+        
+        self.logger.info(f"✅ Found {len(assets)} untagged image assets (of {total_available} total available)")
         return assets
     
-    def get_unprocessed_assets(self, processed_tag_id: Optional[str] = None, limit: int = 100) -> List[Asset]:
-        """Get assets that haven't been processed yet."""
-        # For now, get all assets and filter in the processor
-        # The Immich API doesn't support negative tag filtering with "!" syntax
-        # Cap at 1000 due to Immich API limit
-        api_limit = min(limit, 1000)
-        filters = SearchFilters(size=api_limit)
+    def get_unprocessed_assets(self, processed_tag_id: Optional[str] = None, limit: int = 250) -> List[Asset]:
+        """Get unprocessed assets - now simplified to use metadata search.
         
-        return self.search_assets(filters)
+        Args:
+            processed_tag_id: Ignored - we use tagIds:null to get untagged assets
+            limit: Ignored - API returns natural batches of ~250
+            
+        Returns:
+            List of assets that have no tags (and thus need processing)
+        """
+        return self.get_untagged_assets()
     
     def download_asset(self, asset_id: str, use_thumbnail: bool = True) -> bytes:
         """Download an asset (thumbnail or original)."""
@@ -148,10 +182,8 @@ class ImmichClient:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500 and attempt < self.max_retries:
                     self.logger.warning(
-                        "Server error, retrying",
-                        status_code=e.response.status_code,
-                        attempt=attempt + 1,
-                        max_retries=self.max_retries
+                        f"⚠️  Server error {e.response.status_code}, retrying "
+                        f"(attempt {attempt + 1}/{self.max_retries})"
                     )
                     time.sleep(self.retry_delay * (2 ** attempt))
                     continue
@@ -176,7 +208,7 @@ class ImmichClient:
                     time.sleep(self.retry_delay * (2 ** attempt))
                     continue
                 else:
-                    self.logger.error("Request failed", error=str(e))
+                    self.logger.error(f"❌ Request failed: {str(e)}")
                     raise ImmichAPIError(f"Request failed: {e}")
     
     def get_all_tags(self, use_cache: bool = True) -> List[Tag]:
@@ -202,7 +234,7 @@ class ImmichClient:
             self._tag_cache_timestamp = current_time
             self.logger.debug("Updated tag cache", count=len(self._tag_cache))
         
-        self.logger.info("Fetched tags", count=len(tags))
+        self.logger.debug("Fetched tags", count=len(tags))
         return tags
     
     def create_tag(self, tag_request: CreateTagRequest) -> Tag:
@@ -221,12 +253,18 @@ class ImmichClient:
         # Update cache immediately
         self._tag_cache[tag.name.lower()] = tag
         
-        self.logger.info("Created tag", tag_id=tag.id, name=tag.name)
+        self.logger.debug("Created tag", tag_id=tag.id, name=tag.name)
         return tag
     
     def get_or_create_tag(self, tag_name: str) -> Tag:
         """Get an existing tag or create it if it doesn't exist."""
-        tag_name_lower = tag_name.lower()
+        # Validate tag name first
+        if not self._is_valid_tag_name(tag_name):
+            self.logger.debug(f"Skipping invalid tag name: '{tag_name}'")
+            raise ValueError(f"Invalid tag name: '{tag_name}'")
+        
+        tag_name_clean = tag_name.strip()
+        tag_name_lower = tag_name_clean.lower()
         
         # Ensure cache is populated
         if not self._tag_cache_valid:
@@ -240,19 +278,60 @@ class ImmichClient:
         
         # Create new tag if not found
         performance_monitor.record_cache_miss()
-        self.logger.debug("Creating new tag", name=tag_name)
-        tag_request = CreateTagRequest(name=tag_name)
-        new_tag = self.create_tag(tag_request)
-        performance_monitor.record_tag_created()
-        
-        # Add to cache
-        self._tag_cache[tag_name_lower] = new_tag
-        
-        return new_tag
+        self.logger.debug("Creating new tag", name=tag_name_clean)
+        try:
+            tag_request = CreateTagRequest(name=tag_name_clean)
+            new_tag = self.create_tag(tag_request)
+            performance_monitor.record_tag_created()
+            
+            # Add to cache
+            self._tag_cache[tag_name_lower] = new_tag
+            return new_tag
+            
+        except Exception as e:
+            # Handle "tag already exists" case
+            if "already exists" in str(e).lower():
+                # Refresh cache and try again
+                self.invalidate_tag_cache()
+                self.get_all_tags(use_cache=True)
+                if tag_name_lower in self._tag_cache:
+                    self.logger.debug(f"Found existing tag after cache refresh: {tag_name_clean}")
+                    return self._tag_cache[tag_name_lower]
+            
+            # Re-raise the exception if we can't handle it
+            raise
     
+    def _is_valid_tag_name(self, tag_name: str) -> bool:
+        """Check if a tag name is valid for Immich."""
+        if not tag_name or not tag_name.strip():
+            return False
+        
+        # Only filter out characters that would actually break the API or filesystem
+        # Be more permissive for anime tags which may have special characters
+        invalid_chars = ['\n', '\r', '\t']  # Only control characters
+        for char in invalid_chars:
+            if char in tag_name:
+                return False
+        
+        # Check length (reasonable limits)
+        tag_cleaned = tag_name.strip()
+        if len(tag_cleaned) < 1 or len(tag_cleaned) > 100:
+            return False
+            
+        return True
+
     def get_or_create_tags_bulk(self, tag_names: List[str]) -> Dict[str, Tag]:
         """Get or create multiple tags efficiently. Returns a mapping of original tag names to Tag objects."""
         if not tag_names:
+            return {}
+        
+        # Filter out invalid tag names
+        valid_tag_names = [name for name in tag_names if self._is_valid_tag_name(name)]
+        if len(valid_tag_names) < len(tag_names):
+            invalid_tags = [name for name in tag_names if not self._is_valid_tag_name(name)]
+            self.logger.debug(f"Filtered out {len(invalid_tags)} invalid tag names", invalid_tags=invalid_tags)
+        
+        if not valid_tag_names:
             return {}
         
         # Ensure cache is populated
@@ -263,7 +342,7 @@ class ImmichClient:
         missing_tags = []
         
         # Check which tags exist in cache
-        for tag_name in tag_names:
+        for tag_name in valid_tag_names:
             tag_name_lower = tag_name.lower()
             if tag_name_lower in self._tag_cache:
                 result[tag_name] = self._tag_cache[tag_name_lower]
@@ -276,14 +355,26 @@ class ImmichClient:
         # Create missing tags
         if missing_tags:
             performance_monitor.record_bulk_operation()
-            self.logger.debug("Creating missing tags", count=len(missing_tags), tags=missing_tags)
+            self.logger.debug("Creating missing tags", count=len(missing_tags))
             for tag_name in missing_tags:
                 try:
-                    new_tag = self.create_tag(CreateTagRequest(name=tag_name))
+                    new_tag = self.create_tag(CreateTagRequest(name=tag_name.strip()))
                     result[tag_name] = new_tag
                     performance_monitor.record_tag_created()
                 except Exception as e:
-                    self.logger.warning("Failed to create tag", tag_name=tag_name, error=str(e))
+                    # Check if tag already exists (common race condition)
+                    if "already exists" in str(e).lower():
+                        # Refresh cache and try to find the tag
+                        self.invalidate_tag_cache()
+                        self.get_all_tags(use_cache=True)
+                        tag_name_lower = tag_name.lower()
+                        if tag_name_lower in self._tag_cache:
+                            result[tag_name] = self._tag_cache[tag_name_lower]
+                            self.logger.debug(f"Found existing tag after cache refresh: {tag_name}")
+                        else:
+                            self.logger.debug(f"Tag exists but not found in cache: {tag_name}")
+                    else:
+                        self.logger.debug("Failed to create tag", tag_name=tag_name, error=str(e))
                     # Continue with other tags
                     continue
         
@@ -312,7 +403,7 @@ class ImmichClient:
             json_data=request_data.dict()
         )
         
-        self.logger.info(
+        self.logger.debug(
             "Bulk tagged assets",
             asset_count=len(asset_ids),
             tag_count=len(tag_ids)
@@ -334,15 +425,47 @@ class ImmichClient:
             json_data=request_data.dict()
         )
         
-        self.logger.info("Tagged single asset", asset_id=asset_id, tag_count=len(tag_ids))
+        self.logger.debug("Tagged single asset", asset_id=asset_id, tag_count=len(tag_ids))
     
-    def get_assets_with_tag(self, tag_id: str) -> List[Asset]:
-        """Get all assets that have a specific tag."""
-        self.logger.debug("Getting assets with tag", tag_id=tag_id)
+    def get_assets_with_tag(self, tag_id: str, limit: Optional[int] = None) -> List[Asset]:
+        """Get all assets that have a specific tag.
         
-        # Search for assets with the specific tag
-        filters = SearchFilters(tagIds=[tag_id])
-        return self.search_assets(filters)
+        Args:
+            tag_id: The tag ID to search for
+            limit: Maximum number of assets to return (default: 1000)
+        """
+        if limit is None:
+            limit = 1000  # Default reasonable limit for tagged asset queries
+            
+        self.logger.debug(f"📊 Getting assets with tag {tag_id}, limit={limit}")
+        
+        # Use metadata search with specific tag filter
+        response = self._make_request(
+            method="POST",
+            endpoint="/api/search/metadata",
+            json_data={"tagIds": [tag_id]}
+        )
+        
+        response_data = response.json()
+        assets_section = response_data.get("assets", {})
+        assets_list = assets_section.get("items", [])
+        
+        # Parse assets
+        assets = []
+        for asset_data in assets_list[:limit]:  # Respect limit
+            try:
+                assets.append(Asset(**asset_data))
+            except Exception as e:
+                self.logger.warning(f"⚠️  Failed to parse tagged asset: {e}")
+                continue
+        
+        if len(assets_list) >= limit:
+            self.logger.warning(
+                f"Retrieved {len(assets)} tagged assets (limit: {limit}). "
+                "There may be more assets with this tag."
+            )
+        
+        return assets
     
     def get_asset(self, asset_id: str) -> Asset:
         """Get a specific asset by ID."""

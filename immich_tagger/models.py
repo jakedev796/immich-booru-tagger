@@ -7,6 +7,12 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+class Tag(BaseModel):
+    """Immich tag model."""
+    id: str
+    name: str
+
+
 class Asset(BaseModel):
     """Immich asset model."""
     id: str
@@ -35,17 +41,8 @@ class Asset(BaseModel):
     duplicateId: Optional[str] = None
     resized: Optional[bool] = None
     updatedAt: datetime
-
-
-class Tag(BaseModel):
-    """Immich tag model."""
-    id: str
-    name: str
-    type: str = "OBJECT"
-    userId: Optional[str] = None
-    renameTagId: Optional[str] = None
-    updatedAt: datetime
-    createdAt: datetime
+    # Tags for checking if already processed
+    tags: Optional[List[Tag]] = []
 
 
 class TagPrediction(BaseModel):
@@ -85,14 +82,6 @@ class HealthStatus(BaseModel):
     metrics: Dict[str, Any] = {}
 
 
-class SearchFilters(BaseModel):
-    """Filters for searching assets."""
-    tagIds: Optional[List[str]] = None
-    type: Optional[str] = None  # "IMAGE" or "VIDEO"
-    size: Optional[int] = None
-    order: Optional[str] = "DESC"  # "ASC" or "DESC"
-    withArchived: bool = False
-    withDeleted: bool = False
 
 
 class BulkTagRequest(BaseModel):

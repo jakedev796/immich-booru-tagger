@@ -23,7 +23,7 @@ class BaseTaggingEngine:
     
     def __init__(self):
         self.logger = get_logger("tagging_engine")
-        self.logger.info("Initializing tagging engine")
+        self.logger.debug("Initializing tagging engine")
     
     def predict_tags(self, image_data: bytes) -> List[TagPrediction]:
         """Predict tags for an image. Must be implemented by subclasses."""
@@ -36,7 +36,7 @@ class WD14TaggingEngine(BaseTaggingEngine):
     def __init__(self):
         super().__init__()
         self.model_name = "SmilingWolf/wd-swinv2-tagger-v3"  # Default model from wdtagger
-        self.logger.info("Initializing WD-14 engine", model_name=self.model_name)
+        self.logger.info(f"🤖 Loading AI model: {self.model_name}")
         self._load_model()
     
     def _load_model(self):
@@ -47,7 +47,7 @@ class WD14TaggingEngine(BaseTaggingEngine):
             
             # Initialize the tagger
             self.tagger = Tagger(model_repo=self.model_name)
-            self.logger.info("WD-14 model loaded successfully")
+            self.logger.info("✅ AI model loaded successfully")
             
         except ImportError:
             raise TaggingEngineError("wdtagger package not installed. Run: pip install wdtagger onnxruntime")
@@ -175,7 +175,7 @@ class DeepDanbooruTaggingEngine(BaseTaggingEngine):
     
     def __init__(self):
         super().__init__()
-        self.logger.info("Initializing DeepDanbooru engine")
+        self.logger.info("🤖 Loading DeepDanbooru AI model")
         self._load_model()
     
     def _load_model(self):
@@ -186,7 +186,7 @@ class DeepDanbooruTaggingEngine(BaseTaggingEngine):
             
             # Load the model
             self.model = dd.DeepDanbooru()
-            self.logger.info("DeepDanbooru model loaded successfully")
+            self.logger.info("✅ DeepDanbooru model loaded successfully")
             
         except ImportError:
             raise TaggingEngineError("deepdanbooru package not installed. Run: pip install deepdanbooru tensorflow")

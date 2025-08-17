@@ -117,18 +117,19 @@ class PerformanceMonitor:
         metrics_dict = self.metrics.to_dict()
         
         self.logger.info(
-            "Performance Summary",
-            runtime_seconds=round(runtime, 2),
-            **metrics_dict
+            f"📈 Performance Summary: Runtime {runtime:.1f}s, "
+            f"Cache hit rate {metrics_dict.get('cache_hit_rate_percent', 0):.1f}%, "
+            f"API calls {metrics_dict.get('api_calls_total', 0)}"
         )
         
         # Calculate performance estimates
         if self.metrics.assets_processed > 0:
             estimated_time_for_100k = (self.metrics.average_processing_time or 0) * 100000
+            assets_per_second = self.metrics.assets_processed / runtime if runtime > 0 else 0
             self.logger.info(
-                "Performance Estimates",
-                estimated_time_100k_images_hours=round(estimated_time_for_100k / 3600, 1),
-                assets_per_second=round(self.metrics.assets_processed / runtime, 2) if runtime > 0 else 0
+                f"🎯 Performance Estimates: "
+                f"{assets_per_second:.1f} assets/sec, "
+                f"100k images would take ~{estimated_time_for_100k / 3600:.1f} hours"
             )
     
     def get_metrics_dict(self) -> Dict[str, Any]:

@@ -5,45 +5,44 @@ Logging configuration for the Immich Auto-Tagger service.
 import sys
 import logging
 from typing import Any, Dict
-import structlog
 from rich.console import Console
 from rich.logging import RichHandler
 from .config import settings
 
 
 def setup_logging() -> None:
-    """Configure structured logging with rich console output."""
+    """Configure clean, simple logging output."""
     
-    # Configure structlog
-    structlog.configure(
-        processors=[
-            structlog.stdlib.filter_by_level,
-            structlog.stdlib.add_logger_name,
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer()
-        ],
-        context_class=dict,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
-    )
-    
-    # Configure standard library logging
+    # Configure standard library logging with Rich handler
     logging.basicConfig(
         format="%(message)s",
         level=getattr(logging, settings.log_level),
-        handlers=[RichHandler(rich_tracebacks=True)]
+        handlers=[RichHandler(
+            rich_tracebacks=True,
+            show_time=True,
+            show_path=False,
+            show_level=False,
+            markup=True
+        )],
+        force=True  # Override any existing configuration
     )
+    
+    # Silence noisy third-party loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING) 
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    
+    # Silence AI model loggers  
+    logging.getLogger("wdtagger").setLevel(logging.WARNING)
+    logging.getLogger("transformers").setLevel(logging.WARNING)
+    logging.getLogger("tensorflow").setLevel(logging.WARNING)
+    logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+    logging.getLogger("safetensors").setLevel(logging.WARNING)
 
 
-def get_logger(name: str) -> structlog.BoundLogger:
-    """Get a structured logger instance."""
-    return structlog.get_logger(name)
+def get_logger(name: str):
+    """Get a standard logger instance."""
+    return logging.getLogger(name)
 
 
 class MetricsLogger:
@@ -64,37 +63,23 @@ class MetricsLogger:
         self.metrics["tags_assigned"] += tags_count
         self.metrics["processing_time"] += processing_time
         
-        self.logger.info(
-            "Asset processed successfully",
-            asset_id=asset_id,
-            tags_count=tags_count,
-            processing_time=processing_time,
-            total_assets_processed=self.metrics["assets_processed"],
-            total_tags_assigned=self.metrics["tags_assigned"],
+        # Only log individual assets at DEBUG level to avoid spam
+        self.logger.debug(
+            f"Asset processed: {asset_id} | Tags: {tags_count} | Time: {processing_time:.3f}s | "
+            f"Total: {self.metrics['assets_processed']} assets, {self.metrics['tags_assigned']} tags"
         )
     
     def log_asset_failure(self, asset_id: str, error: str) -> None:
         """Log a failed asset processing."""
         self.metrics["failures"] += 1
         
-        self.logger.error(
-            "Asset processing failed",
-            asset_id=asset_id,
-            error=error,
-            total_failures=self.metrics["failures"],
-        )
+        # Log failures at WARNING level (less verbose than ERROR but still visible)
+        self.logger.warning(f"Asset processing failed: {asset_id} | Error: {error}")
     
     def log_batch_complete(self, batch_size: int, batch_time: float) -> None:
         """Log batch completion metrics."""
-        self.logger.info(
-            "Batch processing complete",
-            batch_size=batch_size,
-            batch_time=batch_time,
-            total_assets_processed=self.metrics["assets_processed"],
-            total_tags_assigned=self.metrics["tags_assigned"],
-            total_failures=self.metrics["failures"],
-            avg_processing_time=self.metrics["processing_time"] / max(1, self.metrics["assets_processed"]),
-        )
+        # Don't log batch completion here - the processor handles clean logging
+        pass
     
     def get_metrics(self) -> Dict[str, Any]:
         """Get current metrics."""

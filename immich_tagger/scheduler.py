@@ -42,8 +42,8 @@ class Scheduler:
         try:
             self.logger.info("Starting scheduled processing cycle")
             
-            # Run the processor
-            await self.processor.run_continuous()
+            # Run the processor - use continuous processing which will stop when no more assets are found
+            self.processor.run_continuous_processing()
             
             self.logger.info("Completed scheduled processing cycle")
             
@@ -80,7 +80,7 @@ class Scheduler:
     async def start(self):
         """Start the scheduler."""
         if not settings.enable_scheduler:
-            self.logger.info("Scheduler disabled, running single cycle")
+            self.logger.info("Scheduler disabled, running single continuous processing session")
             await self._run_processing_cycle()
             return
         
