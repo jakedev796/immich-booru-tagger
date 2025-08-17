@@ -203,6 +203,10 @@ class ImmichAutoTagger:
             limit = settings.batch_size
         
         try:
+            # Check for external changes to failure file (e.g., cleanup script ran)
+            if self.failure_tracker.check_for_external_changes():
+                self.logger.debug("🔄 Failure tracking data refreshed from external changes")
+            
             assets = self.immich_client.get_unprocessed_assets()
             
             if not assets:

@@ -19,12 +19,16 @@ class FailureTracker:
         
         # Structure: {asset_id: {"attempts": N, "last_failed": "ISO_TIME", "permanently_failed": bool}}
         self.failures: Dict[str, Dict] = {}
+        self.last_file_mtime = 0.0  # Track file modification time for external changes
         self.load_failures()
         
     def load_failures(self):
         """Load failure data from disk."""
         try:
             if os.path.exists(self.failure_file):
+                # Update file modification time
+                self.last_file_mtime = os.path.getmtime(self.failure_file)
+                
                 with open(self.failure_file, 'r') as f:
                     data = json.load(f)
                     self.failures = data.get("failures", {})
@@ -32,9 +36,11 @@ class FailureTracker:
             else:
                 self.logger.debug("📋 No failure file found, starting fresh")
                 self.failures = {}
+                self.last_file_mtime = 0.0
         except Exception as e:
             self.logger.warning(f"⚠️  Failed to load failure data: {e}, starting fresh")
             self.failures = {}
+            self.last_file_mtime = 0.0
     
     def save_failures(self):
         """Save failure data to disk."""
@@ -48,6 +54,8 @@ class FailureTracker:
             with open(self.failure_file, 'w') as f:
                 json.dump(data, f, indent=2)
                 
+            # Update our file modification time after saving
+            self.last_file_mtime = os.path.getmtime(self.failure_file)
             self.logger.debug(f"💾 Saved {len(self.failures)} failure records")
         except Exception as e:
             self.logger.warning(f"⚠️  Failed to save failure data: {e}")
@@ -149,6 +157,38 @@ class FailureTracker:
             self.logger.info(f"🔄 Reset {count} failure records")
         
         self.save_failures()
+    
+    def check_for_external_changes(self) -> bool:
+        """Check if the failure file was modified externally and reload if needed.
+        
+        Returns:
+            True if the file was reloaded, False if no changes detected
+        """
+        if not os.path.exists(self.failure_file):
+            # File was deleted externally
+            if self.failures:
+                self.logger.info("🔄 Failure file was deleted externally, clearing memory cache")
+                self.failures = {}
+                self.last_file_mtime = 0.0
+                return True
+            return False
+        
+        try:
+            current_mtime = os.path.getmtime(self.failure_file)
+            if current_mtime > self.last_file_mtime:
+                self.logger.info("🔄 Failure file modified externally, reloading...")
+                old_count = len(self.failures)
+                self.load_failures()
+                new_count = len(self.failures)
+                
+                if old_count != new_count:
+                    self.logger.info(f"📊 Failure count changed: {old_count} → {new_count}")
+                
+                return True
+        except Exception as e:
+            self.logger.warning(f"⚠️  Failed to check file modification time: {e}")
+        
+        return False
     
     def get_failure_summary(self) -> Dict:
         """Get a summary of failure statistics."""
