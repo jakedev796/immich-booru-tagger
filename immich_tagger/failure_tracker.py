@@ -11,11 +11,18 @@ from .config import settings
 
 
 class FailureTracker:
-    """Tracks and manages asset processing failures."""
+    """Tracks and manages asset processing failures per library."""
     
-    def __init__(self, failure_file: str = "processing_failures.json"):
-        self.failure_file = failure_file
-        self.logger = get_logger("failure_tracker")
+    def __init__(self, library_name: str = "default", failure_file: str = None):
+        self.library_name = library_name
+        # Create library-specific failure file
+        if failure_file is None:
+            safe_name = self.library_name.replace(' ', '_').replace('/', '_')
+            self.failure_file = f"processing_failures_{safe_name}.json"
+        else:
+            self.failure_file = failure_file
+            
+        self.logger = get_logger(f"failure_tracker_{library_name}")
         
         # Structure: {asset_id: {"attempts": N, "last_failed": "ISO_TIME", "permanently_failed": bool}}
         self.failures: Dict[str, Dict] = {}

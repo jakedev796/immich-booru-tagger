@@ -3,7 +3,8 @@ Configuration management for the Immich Auto-Tagger service.
 """
 
 import os
-from typing import Optional
+import json
+from typing import Optional, List, Dict, Union
 from pydantic import Field, validator
 from pydantic_settings import BaseSettings
 
@@ -13,7 +14,9 @@ class Settings(BaseSettings):
     
     # Immich Configuration
     immich_base_url: str = Field(..., env="IMMICH_BASE_URL")
-    immich_api_key: str = Field(..., env="IMMICH_API_KEY")
+    immich_api_key: str = Field(default="", env="IMMICH_API_KEY")  # Legacy single key support
+    immich_api_keys: List[str] = Field(default=[], env="IMMICH_API_KEYS")  # New multi-key support
+    immich_libraries: Dict[str, str] = Field(default={}, env="IMMICH_LIBRARIES")  # Named libraries
     
     # Processing Configuration
     confidence_threshold: float = Field(default=0.35, env="CONFIDENCE_THRESHOLD", ge=0.0, le=1.0)
@@ -64,6 +67,63 @@ class Settings(BaseSettings):
         if v.upper() not in valid_levels:
             raise ValueError(f"LOG_LEVEL must be one of: {valid_levels}")
         return v.upper()
+    
+    @validator('immich_api_keys', pre=True, always=True)
+    def parse_api_keys(cls, v, values):
+        """Parse API keys from various formats and ensure we have at least one."""
+        if isinstance(v, str):
+            if not v:  # Empty string, try legacy single key
+                single_key = values.get('immich_api_key', '')
+                return [single_key] if single_key else []
+            # Support JSON array format
+            if v.startswith('[') and v.endswith(']'):
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    raise ValueError("Invalid JSON format for IMMICH_API_KEYS")
+            else:
+                # Support comma-separated format
+                return [key.strip() for key in v.split(',') if key.strip()]
+        elif isinstance(v, list):
+            return v
+        else:
+            # No multi-keys provided, use legacy single key
+            single_key = values.get('immich_api_key', '')
+            return [single_key] if single_key else []
+    
+    @validator('immich_libraries', pre=True)
+    def parse_libraries(cls, v):
+        """Parse named libraries from JSON format."""
+        if isinstance(v, str):
+            if not v:  # Empty string
+                return {}
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError:
+                raise ValueError("Invalid JSON format for IMMICH_LIBRARIES")
+        return v if v else {}
+    
+    def get_library_names(self) -> List[str]:
+        """Get library names (or generate default names)."""
+        if self.immich_libraries:
+            return list(self.immich_libraries.keys())
+        else:
+            # Generate default names for API keys
+            return [f"Library_{i+1}" for i in range(len(self.immich_api_keys))]
+    
+    def get_api_keys(self) -> List[str]:
+        """Get all API keys."""
+        if self.immich_libraries:
+            return list(self.immich_libraries.values())
+        return self.immich_api_keys
+    
+    def get_library_config(self) -> List[Dict[str, str]]:
+        """Get library configuration as list of {name, api_key} dicts."""
+        if self.immich_libraries:
+            return [{"name": name, "api_key": key} for name, key in self.immich_libraries.items()]
+        else:
+            api_keys = self.get_api_keys()
+            return [{"name": f"Library_{i+1}", "api_key": key} for i, key in enumerate(api_keys)]
     
     class Config:
         env_file = ".env"

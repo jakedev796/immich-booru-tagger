@@ -4,7 +4,9 @@ services:
     container_name: immich-auto-tagger
     environment:
       - IMMICH_BASE_URL=${IMMICH_BASE_URL}
-      - IMMICH_API_KEY=${IMMICH_API_KEY}
+      - IMMICH_API_KEY=${IMMICH_API_KEY} # Legacy single key support
+      - IMMICH_API_KEYS=${IMMICH_API_KEYS} # Choose either this or IMMICH_LIBRARIES
+      - IMMICH_LIBRARIES=${IMMICH_LIBRARIES}
       - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.35}
       - BATCH_SIZE=${BATCH_SIZE:-250}
       - PROCESSED_TAG_NAME=${PROCESSED_TAG_NAME:-auto:processed}

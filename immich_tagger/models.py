@@ -77,7 +77,7 @@ class BatchProcessingResult(BaseModel):
 class HealthStatus(BaseModel):
     """Health check response."""
     status: str = "healthy"
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     version: str = "1.0.0"
     metrics: Dict[str, Any] = {}
 

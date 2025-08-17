@@ -28,12 +28,14 @@ class ImmichAutoTagger:
         self.tagging_engine = create_tagging_engine()
         self.processed_tag: Optional[Tag] = None
         
-        # Progress tracking
+        # Progress tracking (global and per-library)
         self.total_processed_assets = 0
         self.total_assigned_tags = 0
+        self.library_metrics: Dict[str, Dict] = {}
         
-        # Initialize failure tracking
-        self.failure_tracker = FailureTracker()
+        # Initialize failure tracking (will be set per library)
+        self.failure_tracker = None
+        self.library_failure_trackers: Dict[str, FailureTracker] = {}
         
         # Initialize the processed tag
         self._initialize_processed_tag()
@@ -166,6 +168,13 @@ class ImmichAutoTagger:
         self.total_processed_assets += processed
         self.total_assigned_tags += total_tags_assigned
         
+        # Update library-specific metrics
+        current_library = self.immich_client.current_library_name
+        if current_library in self.library_metrics:
+            self.library_metrics[current_library]["processed_assets"] += processed
+            self.library_metrics[current_library]["assigned_tags"] += total_tags_assigned
+            self.library_metrics[current_library]["failed_assets"] += failed
+        
         # Record performance metrics
         performance_monitor.record_batch_processed(batch_time)
         
@@ -192,6 +201,22 @@ class ImmichAutoTagger:
         
         return batch_result
     
+    def set_current_library(self, library_name: str):
+        """Set the current library for processing."""
+        # Initialize failure tracker for this library if not exists
+        if library_name not in self.library_failure_trackers:
+            self.library_failure_trackers[library_name] = FailureTracker(library_name)
+        
+        self.failure_tracker = self.library_failure_trackers[library_name]
+        
+        # Initialize library metrics if not exists
+        if library_name not in self.library_metrics:
+            self.library_metrics[library_name] = {
+                "processed_assets": 0,
+                "assigned_tags": 0,
+                "failed_assets": 0
+            }
+    
     def get_unprocessed_assets(self, limit: Optional[int] = None) -> List[Asset]:
         """Get untagged image assets that need processing.
         
@@ -204,25 +229,31 @@ class ImmichAutoTagger:
         
         try:
             # Check for external changes to failure file (e.g., cleanup script ran)
-            if self.failure_tracker.check_for_external_changes():
+            if self.failure_tracker and self.failure_tracker.check_for_external_changes():
                 self.logger.debug("🔄 Failure tracking data refreshed from external changes")
             
             assets = self.immich_client.get_unprocessed_assets()
             
             if not assets:
-                self.logger.info("✅ No more untagged images found - processing complete!")
+                library_name = self.immich_client.current_library_name
+                self.logger.info(f"✅ Library '{library_name}': No more untagged images found - processing complete!")
                 return []
             
             # Filter out permanently failed assets
-            filtered_assets = self.failure_tracker.filter_failed_assets(assets)
+            if self.failure_tracker:
+                filtered_assets = self.failure_tracker.filter_failed_assets(assets)
+            else:
+                filtered_assets = assets
             
             if not filtered_assets:
                 if len(assets) > 0:
-                    self.logger.warning(f"⚠️  Found {len(assets)} untagged images, but all are permanently failed!")
+                    library_name = self.immich_client.current_library_name
+                    self.logger.warning(f"⚠️  Library '{library_name}': Found {len(assets)} untagged images, but all are permanently failed!")
                     self.logger.info("💡 Use --show-failures to see failed asset IDs or --reset-failures to retry them")
                 return []
             
-            self.logger.info(f"🎯 Found {len(filtered_assets)} untagged images to process")
+            library_name = self.immich_client.current_library_name
+            self.logger.info(f"🎯 Library '{library_name}': Found {len(filtered_assets)} untagged images to process")
             return filtered_assets
             
         except Exception as e:

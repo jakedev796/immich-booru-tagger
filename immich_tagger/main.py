@@ -85,7 +85,7 @@ async def run_health_server_async(processor: ImmichAutoTagger):
         await run_health_server(processor)
     except Exception as e:
         logger = get_logger("main")
-        logger.error("Health server failed", error=str(e))
+        logger.error(f"Health server failed: {e}")
 
 
 def run_single_cycle(processor: ImmichAutoTagger) -> bool:

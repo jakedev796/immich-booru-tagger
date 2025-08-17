@@ -17,22 +17,128 @@ class ImmichAPIError(Exception):
 
 
 class ImmichClient:
-    """Client for interacting with the Immich API."""
+    """Client for interacting with the Immich API with multi-library support."""
     
     def __init__(self):
         self.base_url = settings.immich_base_url
-        self.api_key = settings.immich_api_key
+        self.logger = get_logger("immich_client")
         self.timeout = settings.request_timeout
         self.max_retries = settings.max_retries
         self.retry_delay = settings.retry_delay
-        self.logger = get_logger("immich_client")
         
-        # Performance optimizations
-        self._tag_cache: Dict[str, Tag] = {}  # name -> Tag mapping
-        self._tag_cache_valid = False
-        self._tag_cache_timestamp = 0
-        self._cache_ttl = settings.tag_cache_ttl
+        # Multi-library support
+        self.library_configs = settings.get_library_config()
+        self.current_library_index = 0
+        self.current_library = self.library_configs[0] if self.library_configs else {"name": "Unknown", "api_key": ""}
         
+        # Per-library tag caching
+        self._tag_caches: Dict[str, Dict[str, Tag]] = {
+            lib['api_key']: {} for lib in self.library_configs
+        }
+        self._tag_cache_valid: Dict[str, bool] = {
+            lib['api_key']: False for lib in self.library_configs
+        }
+        self._tag_cache_timestamp: Dict[str, float] = {
+            lib['api_key']: 0 for lib in self.library_configs
+        }
+        
+        self.logger.info(f"🏛️ Initialized with {len(self.library_configs)} libraries: {[lib['name'] for lib in self.library_configs]}")
+        
+        # Initialize HTTP client
+        self._setup_http_client()
+    
+    @property
+    def api_key(self):
+        """Get current API key for backward compatibility."""
+        return self.current_library["api_key"]
+    
+    @property
+    def current_library_name(self):
+        """Get current library name."""
+        return self.current_library["name"]
+    
+    @property
+    def _tag_cache(self):
+        """Get tag cache for current library."""
+        return self._tag_caches.get(self.api_key, {})
+    
+    @_tag_cache.setter
+    def _tag_cache(self, value):
+        """Set tag cache for current library."""
+        self._tag_caches[self.api_key] = value
+    
+    def switch_to_library(self, library_index: int):
+        """Switch to a specific library by index."""
+        if 0 <= library_index < len(self.library_configs):
+            old_name = self.current_library_name
+            self.current_library_index = library_index
+            self.current_library = self.library_configs[library_index]
+            
+            # Update HTTP client headers with new API key
+            if hasattr(self, 'client'):
+                self.client.headers["X-API-Key"] = self.api_key
+            
+            # Only log if actually switching to a different library
+            if old_name != self.current_library_name:
+                self.logger.info(f"🔄 Switched from '{old_name}' to '{self.current_library_name}' ({library_index + 1}/{len(self.library_configs)})")
+        else:
+            raise ValueError(f"Invalid library index: {library_index}")
+    
+    def _switch_to_library_silent(self, library_index: int):
+        """Switch to a specific library by index without logging."""
+        if 0 <= library_index < len(self.library_configs):
+            self.current_library_index = library_index
+            self.current_library = self.library_configs[library_index]
+            
+            # Update HTTP client headers with new API key
+            if hasattr(self, 'client'):
+                self.client.headers["X-API-Key"] = self.api_key
+        else:
+            raise ValueError(f"Invalid library index: {library_index}")
+    
+    def switch_to_next_library(self):
+        """Switch to the next library in rotation."""
+        next_index = (self.current_library_index + 1) % len(self.library_configs)
+        self.switch_to_library(next_index)
+    
+    def get_current_user_info(self) -> Dict:
+        """Get information about the current user for logging context."""
+        try:
+            response = self._make_request(
+                method="GET",
+                endpoint="/api/users/me"
+            )
+            
+            if response.status_code == 200:
+                user_data = response.json()
+                return {
+                    "id": user_data.get("id", "unknown"),
+                    "name": user_data.get("name", "Unknown User"),
+                    "email": user_data.get("email", "unknown@example.com")
+                }
+        except Exception as e:
+            self.logger.debug(f"Failed to get user info: {e}")
+        
+        return {"id": "unknown", "name": "Unknown User", "email": "unknown@example.com"}
+    
+    def _get_cache_properties(self):
+        """Get cache properties for current library."""
+        api_key = self.api_key
+        return {
+            'valid': self._tag_cache_valid.get(api_key, False),
+            'timestamp': self._tag_cache_timestamp.get(api_key, 0),
+            'ttl': settings.tag_cache_ttl
+        }
+    
+    def _set_cache_properties(self, valid: bool, timestamp: float = None):
+        """Set cache properties for current library."""
+        api_key = self.api_key
+        self._tag_cache_valid[api_key] = valid
+        if timestamp is not None:
+            self._tag_cache_timestamp[api_key] = timestamp
+    
+    def _setup_http_client(self):
+        """Setup HTTP client with current library's API key."""
         # HTTP client with retry logic
         self.client = httpx.Client(
             timeout=self.timeout,
@@ -41,6 +147,7 @@ class ImmichClient:
                 "Content-Type": "application/json",
             }
         )
+        self._cache_ttl = settings.tag_cache_ttl
         
         # Silence httpx request logging
         import logging
@@ -89,12 +196,7 @@ class ImmichClient:
                     
             except httpx.RequestError as e:
                 if attempt < self.max_retries:
-                    self.logger.warning(
-                        "Request error, retrying",
-                        error=str(e),
-                        attempt=attempt + 1,
-                        max_retries=self.max_retries
-                    )
+                    self.logger.warning(f"Request error, retrying (attempt {attempt + 1}/{self.max_retries}): {e}")
                     time.sleep(self.retry_delay * (2 ** attempt))
                     continue
                 else:
@@ -111,7 +213,8 @@ class ImmichClient:
         Returns:
             List of untagged image assets (max 250 per call)
         """
-        self.logger.debug("🔍 Getting untagged image assets via metadata search")
+        library_name = self.current_library_name
+        self.logger.debug(f"🔍 Library '{library_name}': Getting untagged image assets via metadata search")
         
         # Use the metadata search endpoint to find image assets without any tags
         response = self._make_request(
@@ -127,14 +230,14 @@ class ImmichClient:
         
         # Metadata search returns: {"albums": {...}, "assets": {"items": [...], "total": N, "nextPage": "..."}}
         if not isinstance(response_data, dict) or "assets" not in response_data:
-            self.logger.error(f"❌ Unexpected metadata response structure: {list(response_data.keys()) if isinstance(response_data, dict) else type(response_data)}")
+            self.logger.error(f"❌ Library '{library_name}': Unexpected metadata response structure: {list(response_data.keys()) if isinstance(response_data, dict) else type(response_data)}")
             return []
             
         assets_section = response_data["assets"]
         assets_list = assets_section.get("items", [])
         total_available = assets_section.get("total", len(assets_list))
         
-        self.logger.debug(f"📊 Metadata search: {len(assets_list)} assets returned, {total_available} total available")
+        self.logger.debug(f"📊 Library '{library_name}': Metadata search: {len(assets_list)} assets returned, {total_available} total available")
         
         # Parse assets
         assets = []
@@ -143,12 +246,12 @@ class ImmichClient:
                 if isinstance(asset_data, dict):
                     assets.append(Asset(**asset_data))
                 else:
-                    self.logger.debug(f"⚠️  Skipping non-dict asset data: {type(asset_data)}")
+                    self.logger.debug(f"⚠️  Library '{library_name}': Skipping non-dict asset data: {type(asset_data)}")
             except Exception as e:
-                self.logger.warning(f"⚠️  Failed to parse asset: {e}")
+                self.logger.warning(f"⚠️  Library '{library_name}': Failed to parse asset: {e}")
                 continue
         
-        self.logger.info(f"✅ Found {len(assets)} untagged image assets (of {total_available} total available)")
+        self.logger.info(f"✅ Library '{library_name}': Found {len(assets)} untagged image assets (of {total_available} total available)")
         return assets
     
     def get_unprocessed_assets(self, processed_tag_id: Optional[str] = None, limit: int = 250) -> List[Asset]:
@@ -199,12 +302,7 @@ class ImmichClient:
                     
             except httpx.RequestError as e:
                 if attempt < self.max_retries:
-                    self.logger.warning(
-                        "Request error, retrying",
-                        error=str(e),
-                        attempt=attempt + 1,
-                        max_retries=self.max_retries
-                    )
+                    self.logger.warning(f"Request error, retrying (attempt {attempt + 1}/{self.max_retries}): {e}")
                     time.sleep(self.retry_delay * (2 ** attempt))
                     continue
                 else:
@@ -216,8 +314,9 @@ class ImmichClient:
         current_time = time.time()
         
         # Check if cache is valid
-        if (use_cache and self._tag_cache_valid and 
-            current_time - self._tag_cache_timestamp < self._cache_ttl):
+        cache_props = self._get_cache_properties()
+        if (use_cache and cache_props['valid'] and 
+            current_time - cache_props['timestamp'] < cache_props['ttl']):
             self.logger.debug("Using cached tags", count=len(self._tag_cache))
             return list(self._tag_cache.values())
         
@@ -230,8 +329,7 @@ class ImmichClient:
         # Update cache
         if use_cache:
             self._tag_cache = {tag.name.lower(): tag for tag in tags}
-            self._tag_cache_valid = True
-            self._tag_cache_timestamp = current_time
+            self._set_cache_properties(valid=True, timestamp=current_time)
             self.logger.debug("Updated tag cache", count=len(self._tag_cache))
         
         self.logger.debug("Fetched tags", count=len(tags))
@@ -267,7 +365,8 @@ class ImmichClient:
         tag_name_lower = tag_name_clean.lower()
         
         # Ensure cache is populated
-        if not self._tag_cache_valid:
+        cache_props = self._get_cache_properties()
+        if not cache_props['valid']:
             self.get_all_tags(use_cache=True)
         
         # Check cache first
@@ -335,7 +434,8 @@ class ImmichClient:
             return {}
         
         # Ensure cache is populated
-        if not self._tag_cache_valid:
+        cache_props = self._get_cache_properties()
+        if not cache_props['valid']:
             self.get_all_tags(use_cache=True)
         
         result = {}
@@ -374,7 +474,7 @@ class ImmichClient:
                         else:
                             self.logger.debug(f"Tag exists but not found in cache: {tag_name}")
                     else:
-                        self.logger.debug("Failed to create tag", tag_name=tag_name, error=str(e))
+                        self.logger.debug(f"Failed to create tag '{tag_name}': {e}")
                     # Continue with other tags
                     continue
         
@@ -510,13 +610,13 @@ class ImmichClient:
             self.logger.info("Connection test successful")
             return True
         except Exception as e:
-            self.logger.error("Connection test failed", error=str(e))
+            self.logger.error(f"Connection test failed: {e}")
             return False
     
     def invalidate_tag_cache(self):
         """Invalidate the tag cache to force refresh on next access."""
-        self._tag_cache_valid = False
-        self._tag_cache.clear()
+        self._set_cache_properties(valid=False)
+        self._tag_cache = {}
         self.logger.debug("Tag cache invalidated")
     
     def close(self):

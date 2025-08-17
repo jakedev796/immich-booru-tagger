@@ -28,26 +28,67 @@ class HealthServer:
         self.app.router.add_get("/", self.root_handler)
     
     async def health_handler(self, request):
-        """Health check endpoint."""
+        """Health check endpoint with multi-library support."""
         try:
-            # Test connection to Immich
-            connection_ok = self.processor.test_connection()
+            # Save current library context
+            original_index = self.processor.immich_client.current_library_index
             
-            # Get current metrics
-            metrics = self.processor.get_metrics()
+            # Test connection for all libraries
+            library_statuses = {}
+            overall_healthy = True
+            
+            for i, library_config in enumerate(self.processor.immich_client.library_configs):
+                library_name = library_config["name"]
+                try:
+                    # Switch to this library and test connection
+                    self.processor.immich_client.switch_to_library(i)
+                    connection_ok = self.processor.test_connection()
+                    
+                    # Get user info
+                    user_info = self.processor.immich_client.get_current_user_info()
+                    
+                    library_statuses[library_name] = {
+                        "status": "healthy" if connection_ok else "unhealthy",
+                        "user": {
+                            "name": user_info["name"],
+                            "email": user_info["email"]
+                        },
+                        "metrics": self.processor.library_metrics.get(library_name, {})
+                    }
+                    
+                    if not connection_ok:
+                        overall_healthy = False
+                        
+                except Exception as e:
+                    library_statuses[library_name] = {
+                        "status": "error",
+                        "error": str(e),
+                        "metrics": {}
+                    }
+                    overall_healthy = False
+            
+            # Restore original library without logging
+            self.processor.immich_client._switch_to_library_silent(original_index)
+            
+            # Get global metrics
+            global_metrics = self.processor.get_metrics()
             
             health_status = HealthStatus(
-                status="healthy" if connection_ok else "unhealthy",
-                metrics=metrics
+                status="healthy" if overall_healthy else "unhealthy",
+                metrics={
+                    "libraries": library_statuses,
+                    "global": global_metrics,
+                    "total_libraries": len(self.processor.immich_client.library_configs)
+                }
             )
             
             return web.json_response(
                 health_status.dict(),
-                status=200 if connection_ok else 503
+                status=200 if overall_healthy else 503
             )
             
         except Exception as e:
-            self.logger.error("Health check failed", error=str(e))
+            self.logger.error(f"Health check failed: {e}")
             return web.json_response(
                 {"status": "unhealthy", "error": str(e)},
                 status=503
@@ -71,7 +112,7 @@ class HealthServer:
             return web.json_response(metrics)
             
         except Exception as e:
-            self.logger.error("Metrics retrieval failed", error=str(e))
+            self.logger.error(f"Metrics retrieval failed: {e}")
             return web.json_response(
                 {"error": str(e)},
                 status=500
@@ -105,11 +146,7 @@ class HealthServer:
         
         await site.start()
         
-        self.logger.info(
-            "Health server started",
-            host="0.0.0.0",
-            port=settings.health_port
-        )
+        self.logger.info(f"Health server started on 0.0.0.0:{settings.health_port}")
         
         return runner
     
