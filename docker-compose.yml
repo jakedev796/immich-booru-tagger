@@ -8,15 +8,18 @@ services:
       - IMMICH_BASE_URL=${IMMICH_BASE_URL}
       - IMMICH_API_KEY=${IMMICH_API_KEY}
       - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.35}
-      - BATCH_SIZE=${BATCH_SIZE:-25}
+      - BATCH_SIZE=${BATCH_SIZE:-250}
       - PROCESSED_TAG_NAME=${PROCESSED_TAG_NAME:-auto:processed}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - ENABLE_SCHEDULER=${ENABLE_SCHEDULER:-true}
       - CRON_SCHEDULE=${CRON_SCHEDULE:-0 2 * * *}
       - TIMEZONE=${TIMEZONE:-UTC}
+      - FAILURE_TIMEOUT=${FAILURE_TIMEOUT:-3}
+      - TAG_CACHE_TTL=${TAG_CACHE_TTL:-300}
     volumes:
       - ./models:/app/models  # For caching AI models
       - ./logs:/app/logs      # For persistent logs
+      - ./processing_failures.json:/app/processing_failures.json  # For failure tracking persistence
     ports:
       - "8000:8000"  # Health endpoint
     restart: unless-stopped
