@@ -203,6 +203,41 @@ class ImmichClient:
                     self.logger.error(f"❌ Request failed: {str(e)}")
                     raise ImmichAPIError(f"Request failed: {e}")
     
+    def _make_request_silent(
+        self, 
+        method: str, 
+        endpoint: str, 
+        params: Optional[Dict[str, Any]] = None,
+        json_data: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        """Make an HTTP request without logging (for health checks)."""
+        url = f"{self.base_url}{endpoint}"
+        
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.client.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    json=json_data
+                )
+                response.raise_for_status()
+                return response
+                
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code >= 500 and attempt < self.max_retries:
+                    time.sleep(self.retry_delay * (2 ** attempt))  # Exponential backoff
+                    continue
+                else:
+                    raise ImmichAPIError(f"HTTP {e.response.status_code}: {e.response.text}")
+                    
+            except httpx.RequestError as e:
+                if attempt < self.max_retries:
+                    time.sleep(self.retry_delay * (2 ** attempt))
+                    continue
+                else:
+                    raise ImmichAPIError(f"Request failed: {e}")
+    
     def get_untagged_assets(self) -> List[Asset]:
         """Get image assets that have no tags using the metadata search endpoint.
         
